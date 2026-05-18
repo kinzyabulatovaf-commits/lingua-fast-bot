@@ -6,19 +6,19 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from groq import AsyncGroq
+from together import Together
 from aiohttp import web
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "")
 WEBHOOK_PATH = "/webhook/"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-groq_client = AsyncGroq(api_key=GROQ_API_KEY)
+together_client = Together(api_key=TOGETHER_API_KEY)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
 # --- ДАННЫЕ ---
@@ -113,7 +113,7 @@ async def translate_text(message: types.Message):
 
     text = message.text.strip()
     if not text:
-        return  # Игнорируем пустые сообщения
+        return
         
     logging.info(f"User {user_id} | {cfg['src']}→{cfg['tgt']} | '{text[:50]}...'")
     
@@ -125,16 +125,14 @@ async def translate_text(message: types.Message):
             f"Текст для перевода: {text}"
         )
 
-        response = await groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        response = together_client.chat.completions.create(
+            model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=512,
-            timeout=30
+            max_tokens=512
         )
         
         result = response.choices[0].message.content.strip()
-        # Убираем возможные кавычки в начале/конце
         result = result.strip('"').strip("'")
         
         cfg['last_text'] = text
@@ -150,9 +148,9 @@ async def translate_text(message: types.Message):
         logging.exception(f"✗ Translation failed for user {user_id}: {type(e).__name__}")
         error_msg = str(e)
         if "RateLimit" in error_msg or "429" in error_msg:
-            await message.answer("⏳ Слишком много запросов. Подожди 30 секунд и попробуй снова.")
+            await message.answer("⏳ Слишком много запросов. Подожди 30 секунд.")
         elif "Unauthorized" in error_msg or "api_key" in error_msg.lower():
-            await message.answer("🔑 Ошибка API-ключа. Проверь настройки на Render.")
+            await message.answer("🔑 Ошибка API-ключа. Проверь TOGETHER_API_KEY на Render.")
         else:
             await message.answer(f"⚠️ Ошибка: {type(e).__name__}. Попробуй позже или напиши /start")
 
