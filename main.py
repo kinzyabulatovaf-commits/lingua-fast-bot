@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from together import Together
+from together import AsyncTogether  # ✅ Асинхронный клиент!
 from aiohttp import web
 
 # --- НАСТРОЙКИ ---
@@ -18,7 +18,10 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-together_client = Together(api_key=TOGETHER_API_KEY)
+
+# ✅ Используем асинхронный клиент Together
+together_client = AsyncTogether(api_key=TOGETHER_API_KEY) if TOGETHER_API_KEY else None
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
 # --- ДАННЫЕ ---
@@ -117,19 +120,25 @@ async def translate_text(message: types.Message):
         
     logging.info(f"User {user_id} | {cfg['src']}→{cfg['tgt']} | '{text[:50]}...'")
     
+    if not together_client:
+        await message.answer("🔑 Ошибка: API-ключ не настроен. Проверь TOGETHER_API_KEY на Render.")
+        return
+    
     try:
         prompt = (
             f"Переведи текст с {LANG_NAMES[cfg['src']]} на {LANG_NAMES[cfg['tgt']]}. "
             f"Контекст: {GOALS[cfg['goal']]}. Стиль: {STYLES[cfg['style']]}. "
             f"Верни ТОЛЬКО перевод, без кавычек, пояснений и служебных слов.\n\n"
-            f"Текст для перевода: {text}"
+            f"Текст: {text}"
         )
 
-        response = together_client.chat.completions.create(
-            model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        # ✅ Асинхронный вызов + правильная модель
+        response = await together_client.chat.completions.create(
+            model="meta-llama/Llama-3.1-8B-Instruct-Turbo",  # ✅ Стабильная бесплатная модель
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=512
+            max_tokens=512,
+            timeout=30
         )
         
         result = response.choices[0].message.content.strip()
@@ -145,12 +154,17 @@ async def translate_text(message: types.Message):
         logging.info(f"✓ Translation sent to user {user_id}")
         
     except Exception as e:
-        logging.exception(f"✗ Translation failed for user {user_id}: {type(e).__name__}")
-        error_msg = str(e)
-        if "RateLimit" in error_msg or "429" in error_msg:
-            await message.answer("⏳ Слишком много запросов. Подожди 30 секунд.")
-        elif "Unauthorized" in error_msg or "api_key" in error_msg.lower():
+        logging.exception(f"✗ Translation failed: {type(e).__name__} | {str(e)[:200]}")
+        
+        error_str = str(e).lower()
+        if "unauthorized" in error_str or "api_key" in error_str:
             await message.answer("🔑 Ошибка API-ключа. Проверь TOGETHER_API_KEY на Render.")
+        elif "model" in error_str or "not found" in error_str:
+            await message.answer("❌ Модель не найдена. Попробуй позже.")
+        elif "429" in error_str or "rate limit" in error_str:
+            await message.answer("⏳ Слишком много запросов. Подожди 30 секунд.")
+        elif "402" in error_str or "quota" in error_str or "credit" in error_str:
+            await message.answer("💸 Закончились бесплатные кредиты. Проверь баланс на together.ai")
         else:
             await message.answer(f"⚠️ Ошибка: {type(e).__name__}. Попробуй позже или напиши /start")
 
