@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatAction
 from groq import AsyncGroq
 from aiohttp import web
 
@@ -19,7 +19,7 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
 # --- ДАННЫЕ ---
 LANGS = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English", "es": "🇪🇸 Español", "de": "🇩🇪 Deutsch"}
@@ -91,36 +91,43 @@ async def set_style(cb: types.CallbackQuery, state: FSMContext):
     style = cb.data.split("_")[1]
     user_data[cb.from_user.id]["style"] = style
     cfg = user_data[cb.from_user.id]
-    
     await cb.message.edit_text(
         f"✅ Настройки сохранены!\n"
-        f" С {LANGS[cfg['src']]} на {LANGS[cfg['tgt']]}\n"
-        f"🎯 Для: {GOALS[cfg['goal']]}, Стиль: {STYLES[cfg['style']]}\n\n"
+        f"📝 С {LANGS[cfg['src']]} на {LANGS[cfg['tgt']]}\n"
+        f" Для: {GOALS[cfg['goal']]}, Стиль: {STYLES[cfg['style']]}\n\n"
         f"📩 Отправляй текст для перевода!"
     )
     await state.set_state(BotStates.waiting_for_text)
 
 @dp.message(BotStates.waiting_for_text)
 async def translate_text(message: types.Message):
-    cfg = user_data[message.from_user.id]
+    user_id = message.from_user.id
+    if user_id not in user_data:
+        await message.answer("Пожалуйста, начни с /start")
+        return
+        
+    cfg = user_data[user_id]
+    if not all(k in cfg for k in ("src", "tgt", "goal", "style")):
+        await message.answer("Настройки неполные. Напиши /start")
+        return
+
     text = message.text
-    
-    # Отправляем индикатор печати
-    await message.answer_chat_action("typing")
+    logging.info(f"User {user_id} requested translation: '{text}'")
     
     try:
-        # Промпт, который ЗАСТАВЛЯЕТ нейросеть менять стиль
-        prompt = f"""Ты профессиональный переводчик. Переведи текст с {LANG_NAMES[cfg['src']]} на {LANG_NAMES[cfg['tgt']]}.
-Контекст использования: {GOALS[cfg['goal']]}.
-Требуемый стиль: {STYLES[cfg['style']]}.
-Важно: Адаптируй лексику, грамматику и тон под выбранный стиль. Сохрани точный смысл. Верни ТОЛЬКО перевод, без пояснений и кавычек.
-
-Текст: {text}"""
+        await message.answer_chat_action(ChatAction.TYPING)
+        
+        prompt = (
+            f"Переведи текст с {LANG_NAMES[cfg['src']]} на {LANG_NAMES[cfg['tgt']]}. "
+            f"Контекст: {GOALS[cfg['goal']]}. Стиль: {STYLES[cfg['style']]}. "
+            f"Верни ТОЛЬКО перевод, без кавычек и пояснений.\n\nТекст: {text}"
+        )
 
         response = await groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile", # Мощная бесплатная модель
+            model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3 # Низкая температура = более точный и стабильный перевод
+            temperature=0.3,
+            max_tokens=512
         )
         
         result = response.choices[0].message.content.strip()
@@ -128,17 +135,18 @@ async def translate_text(message: types.Message):
         cfg['last_result'] = result
         
         await message.answer(
-            f"📥 Оригинал: {text}\n\n📤 Перевод ({STYLES[cfg['style']]}): {result}",
+            f"📥 Оригинал: {text}\n\n📤 Перевод: {result}",
             reply_markup=get_action_kb()
         )
     except Exception as e:
-        await message.answer(f"️ Ошибка: {e}")
+        logging.exception(f"Translation failed for user {user_id}")
+        await message.answer(f"⚠️ Ошибка перевода: {type(e).__name__}. Попробуй позже или напиши /start")
 
 @dp.callback_query(F.data.in_(["swap", "change_lang", "change_style", "copy"]))
 async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
-    cfg = user_data[cb.from_user.id]
+    cfg = user_data.get(cb.from_user.id, {})
     if cb.data == "swap":
-        cfg['src'], cfg['tgt'] = cfg['tgt'], cfg['src']
+        cfg['src'], cfg['tgt'] = cfg.get('tgt'), cfg.get('src')
         await cb.answer("🔄 Языки поменяны местами!")
     elif cb.data == "change_lang":
         await cb.message.edit_text("Выбери новый язык оригинала:", reply_markup=get_lang_kb())
@@ -147,7 +155,7 @@ async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
         await cb.message.edit_text("Выбери новый стиль:", reply_markup=get_style_kb())
         await state.set_state(BotStates.choosing_style)
     elif cb.data == "copy":
-        await cb.answer(" Скопировано!")
+        await cb.answer("📋 Скопировано! (Нажми на сообщение и удерживай)")
 
 # --- WEBHOOK ---
 async def handle_webhook(request: web.Request):
@@ -162,7 +170,7 @@ async def handle_webhook(request: web.Request):
 async def on_startup():
     if WEBHOOK_HOST:
         await bot.set_webhook(WEBHOOK_URL)
-        logging.info(f" Webhook: {WEBHOOK_URL}")
+        logging.info(f"🔗 Webhook установлен: {WEBHOOK_URL}")
 
 async def main():
     await on_startup()
