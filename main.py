@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatAction
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from groq import AsyncGroq
 from aiohttp import web
 
@@ -94,7 +94,7 @@ async def set_style(cb: types.CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
         f"✅ Настройки сохранены!\n"
         f"📝 С {LANGS[cfg['src']]} на {LANGS[cfg['tgt']]}\n"
-        f" Для: {GOALS[cfg['goal']]}, Стиль: {STYLES[cfg['style']]}\n\n"
+        f"🎯 Для: {GOALS[cfg['goal']]}, Стиль: {STYLES[cfg['style']]}\n\n"
         f"📩 Отправляй текст для перевода!"
     )
     await state.set_state(BotStates.waiting_for_text)
@@ -103,34 +103,40 @@ async def set_style(cb: types.CallbackQuery, state: FSMContext):
 async def translate_text(message: types.Message):
     user_id = message.from_user.id
     if user_id not in user_data:
-        await message.answer("Пожалуйста, начни с /start")
+        await message.answer("⚠️ Пожалуйста, начни с /start")
         return
         
     cfg = user_data[user_id]
     if not all(k in cfg for k in ("src", "tgt", "goal", "style")):
-        await message.answer("Настройки неполные. Напиши /start")
+        await message.answer("⚠️ Настройки неполные. Напиши /start")
         return
 
-    text = message.text
-    logging.info(f"User {user_id} requested translation: '{text}'")
+    text = message.text.strip()
+    if not text:
+        return  # Игнорируем пустые сообщения
+        
+    logging.info(f"User {user_id} | {cfg['src']}→{cfg['tgt']} | '{text[:50]}...'")
     
     try:
-        await message.answer_chat_action(ChatAction.TYPING)
-        
         prompt = (
             f"Переведи текст с {LANG_NAMES[cfg['src']]} на {LANG_NAMES[cfg['tgt']]}. "
             f"Контекст: {GOALS[cfg['goal']]}. Стиль: {STYLES[cfg['style']]}. "
-            f"Верни ТОЛЬКО перевод, без кавычек и пояснений.\n\nТекст: {text}"
+            f"Верни ТОЛЬКО перевод, без кавычек, пояснений и служебных слов.\n\n"
+            f"Текст для перевода: {text}"
         )
 
         response = await groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=512
+            max_tokens=512,
+            timeout=30
         )
         
         result = response.choices[0].message.content.strip()
+        # Убираем возможные кавычки в начале/конце
+        result = result.strip('"').strip("'")
+        
         cfg['last_text'] = text
         cfg['last_result'] = result
         
@@ -138,9 +144,17 @@ async def translate_text(message: types.Message):
             f"📥 Оригинал: {text}\n\n📤 Перевод: {result}",
             reply_markup=get_action_kb()
         )
+        logging.info(f"✓ Translation sent to user {user_id}")
+        
     except Exception as e:
-        logging.exception(f"Translation failed for user {user_id}")
-        await message.answer(f"⚠️ Ошибка перевода: {type(e).__name__}. Попробуй позже или напиши /start")
+        logging.exception(f"✗ Translation failed for user {user_id}: {type(e).__name__}")
+        error_msg = str(e)
+        if "RateLimit" in error_msg or "429" in error_msg:
+            await message.answer("⏳ Слишком много запросов. Подожди 30 секунд и попробуй снова.")
+        elif "Unauthorized" in error_msg or "api_key" in error_msg.lower():
+            await message.answer("🔑 Ошибка API-ключа. Проверь настройки на Render.")
+        else:
+            await message.answer(f"⚠️ Ошибка: {type(e).__name__}. Попробуй позже или напиши /start")
 
 @dp.callback_query(F.data.in_(["swap", "change_lang", "change_style", "copy"]))
 async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
@@ -187,5 +201,7 @@ async def main():
         await runner.cleanup()
 
 if __name__ == "__main__":
-    if not WEBHOOK_HOST: asyncio.run(dp.start_polling(bot))
-    else: asyncio.run(main())
+    if not WEBHOOK_HOST: 
+        asyncio.run(dp.start_polling(bot))
+    else: 
+        asyncio.run(main())
