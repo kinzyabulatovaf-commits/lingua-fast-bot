@@ -20,22 +20,27 @@ dp = Dispatcher()
 logging.basicConfig(level=logging.INFO)
 
 # --- ДАННЫЕ ---
-LANGS = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English", "es": "🇪🇸 Español", "de": "🇩🇪 Deutsch"}
-GOALS = {"study": "📚 Учеба", "work": "💼 Работа", "travel": "✈️ Путешествие", "social": "💬 Соцсети", "daily": " Повседневное"}
-STYLES = {"formal": "👔 Формальный", "informal": "😎 Разговорный", "neutral": "⚖️ Нейтральный"}
+LANGS = {"ru": "🇺 Русский", "en": "🇧 English", "es": "🇸 Español", "de": "🇪 Deutsch"}
+GOALS = {"study": "📚 Учеба", "work": "💼 Работа", "travel": "✈️ Путешествие", "social": "💬 Соцсети", "daily": "🏠 Повседневное"}
+STYLES = {"formal": " Формальный", "informal": "😎 Разговорный", "neutral": "️ Нейтральный"}
 
 user_data = {}
 
-# --- МАШИНА СОСТОЯНИЙ ---
+# --- МАШИНА СОСТОЯНИЙ (ИСПРАВЛЕНО) ---
 class BotStates(StatesGroup):
-    choosing_lang = State()
+    choosing_src_lang = State()
+    choosing_tgt_lang = State()
     choosing_goal = State()
     choosing_style = State()
     waiting_for_text = State()
 
 # --- КЛАВИАТУРЫ ---
-def get_lang_kb():
-    buttons = [[InlineKeyboardButton(text=v, callback_data=f"lang_{k}")] for k, v in LANGS.items()]
+def get_lang_kb(exclude=None):
+    buttons = []
+    for k, v in LANGS.items():
+        if k == exclude:
+            continue
+        buttons.append([InlineKeyboardButton(text=v, callback_data=f"lang_{k}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_goal_kb():
@@ -49,30 +54,37 @@ def get_style_kb():
 def get_action_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Перевести обратно", callback_data="swap"),
-         InlineKeyboardButton(text=" Копировать", callback_data="copy")],
+         InlineKeyboardButton(text="📋 Копировать", callback_data="copy")],
         [InlineKeyboardButton(text="🌐 Изменить язык", callback_data="change_lang"),
-         InlineKeyboardButton(text="🎨 Изменить стиль", callback_data="change_style")]
+         InlineKeyboardButton(text=" Изменить стиль", callback_data="change_style")]
     ])
 
 # --- ЛОГИКА ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
-    user_data[message.from_user.id] = {"src": None, "tgt": None}
-    await message.answer("Привет! Выбери язык ОРИГИНАЛА:", reply_markup=get_lang_kb())
-    await state.set_state(BotStates.choosing_lang)
+    user_data[message.from_user.id] = {}
+    await message.answer("👋 Привет! Выбери язык ОРИГИНАЛА:", reply_markup=get_lang_kb())
+    await state.set_state(BotStates.choosing_src_lang)
 
-@dp.callback_query(BotStates.choosing_lang)
-async def set_lang(cb: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(BotStates.choosing_src_lang)
+async def set_src_lang(cb: types.CallbackQuery, state: FSMContext):
     code = cb.data.split("_")[1]
     user_data[cb.from_user.id]["src"] = code
-    await cb.message.edit_text(f"Выбран: {LANGS[code]}. Теперь язык ПЕРЕВОДА:", reply_markup=get_lang_kb())
+    await cb.message.edit_text(f"✅ Источник: {LANGS[code]}. Теперь выбери язык ПЕРЕВОДА:", reply_markup=get_lang_kb(exclude=code))
+    await state.set_state(BotStates.choosing_tgt_lang)
+
+@dp.callback_query(BotStates.choosing_tgt_lang)
+async def set_tgt_lang(cb: types.CallbackQuery, state: FSMContext):
+    code = cb.data.split("_")[1]
+    user_data[cb.from_user.id]["tgt"] = code
+    await cb.message.edit_text(f"✅ Цель: {LANGS[code]}. Для какой сферы нужен перевод?", reply_markup=get_goal_kb())
     await state.set_state(BotStates.choosing_goal)
 
 @dp.callback_query(BotStates.choosing_goal)
 async def set_goal(cb: types.CallbackQuery, state: FSMContext):
     goal = cb.data.split("_")[1]
     user_data[cb.from_user.id]["goal"] = goal
-    await cb.message.edit_text(f"Цель: {GOALS[goal]}. Выбери стиль:", reply_markup=get_style_kb())
+    await cb.message.edit_text(f" Цель: {GOALS[goal]}. Выбери стиль общения:", reply_markup=get_style_kb())
     await state.set_state(BotStates.choosing_style)
 
 @dp.callback_query(BotStates.choosing_style)
@@ -82,9 +94,10 @@ async def set_style(cb: types.CallbackQuery, state: FSMContext):
     cfg = user_data[cb.from_user.id]
     
     await cb.message.edit_text(
-        f"✅ Готово!\n📝 С {LANGS[cfg['src']]} на {LANGS[cfg['tgt']]}\n"
-        f"🎯 Для: {GOALS[cfg['goal']]},  Стиль: {STYLES[cfg['style']]}\n\n"
-        f"Отправляй текст для перевода!"
+        f"✅ Настройки сохранены!\n"
+        f"📝 С {LANGS[cfg['src']]} на {LANGS[cfg['tgt']]}\n"
+        f"🎯 Для: {GOALS[cfg['goal']]}, Стиль: {STYLES[cfg['style']]}\n\n"
+        f"📩 Отправляй текст для перевода!"
     )
     await state.set_state(BotStates.waiting_for_text)
 
@@ -122,19 +135,18 @@ async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
         await cb.answer("🔄 Языки поменяны местами! Отправь текст.")
     elif cb.data == "change_lang":
         await cb.message.edit_text("Выбери новый язык оригинала:", reply_markup=get_lang_kb())
-        await state.set_state(BotStates.choosing_lang)
+        await state.set_state(BotStates.choosing_src_lang)
     elif cb.data == "change_style":
         await cb.message.edit_text("Выбери новый стиль:", reply_markup=get_style_kb())
         await state.set_state(BotStates.choosing_style)
     elif cb.data == "copy":
-        await cb.answer("📋 Перевод скопирован (нажми на сообщение и удерживай)")
+        await cb.answer("📋 Скопировано! (Нажми на сообщение с переводом и удерживай)")
 
-# --- WEBHOOK (ИСПРАВЛЕНО ДЛЯ AIOGRAM 3) ---
+# --- WEBHOOK ---
 async def handle_webhook(request: web.Request):
     try:
         update_data = await request.json()
         update = types.Update(**update_data)
-        # ✅ В aiogram 3.x обновление передаётся в диспетчер
         await dp.feed_update(bot, update)
         return web.Response()
     except Exception as e:
@@ -148,7 +160,6 @@ async def on_startup():
 
 async def main():
     await on_startup()
-    
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
     
@@ -166,7 +177,6 @@ async def main():
 
 if __name__ == "__main__":
     if not WEBHOOK_HOST:
-        logging.info("Running locally with polling...")
         asyncio.run(dp.start_polling(bot))
     else:
         asyncio.run(main())
