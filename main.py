@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from together import AsyncTogether  # ✅ Асинхронный клиент!
+from together import AsyncTogether
 from aiohttp import web
 
 # --- НАСТРОЙКИ ---
@@ -18,8 +18,6 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
-# ✅ Используем асинхронный клиент Together
 together_client = AsyncTogether(api_key=TOGETHER_API_KEY) if TOGETHER_API_KEY else None
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -32,7 +30,6 @@ STYLES = {"formal": "формальный", "informal": "разговорный"
 
 user_data = {}
 
-# --- МАШИНА СОСТОЯНИЙ ---
 class BotStates(StatesGroup):
     choosing_src_lang = State()
     choosing_tgt_lang = State()
@@ -121,20 +118,22 @@ async def translate_text(message: types.Message):
     logging.info(f"User {user_id} | {cfg['src']}→{cfg['tgt']} | '{text[:50]}...'")
     
     if not together_client:
-        await message.answer("🔑 Ошибка: API-ключ не настроен. Проверь TOGETHER_API_KEY на Render.")
+        await message.answer("🔑 Ошибка: API-ключ не настроен.")
         return
     
     try:
         prompt = (
             f"Переведи текст с {LANG_NAMES[cfg['src']]} на {LANG_NAMES[cfg['tgt']]}. "
             f"Контекст: {GOALS[cfg['goal']]}. Стиль: {STYLES[cfg['style']]}. "
-            f"Верни ТОЛЬКО перевод, без кавычек, пояснений и служебных слов.\n\n"
-            f"Текст: {text}"
+            f"Верни ТОЛЬКО перевод, без кавычек и пояснений.\n\nТекст: {text}"
         )
 
-        # ✅ Асинхронный вызов + правильная модель
+        # ✅ ПРОВЕРЕННАЯ МОДЕЛЬ (бесплатная и доступная)
+        MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct-Turbo"
+        logging.info(f"🤖 Calling model: {MODEL_NAME}")
+        
         response = await together_client.chat.completions.create(
-            model="meta-llama/Llama-3.1-8B-Instruct-Turbo",  # ✅ Стабильная бесплатная модель
+            model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=512,
@@ -151,22 +150,23 @@ async def translate_text(message: types.Message):
             f"📥 Оригинал: {text}\n\n📤 Перевод: {result}",
             reply_markup=get_action_kb()
         )
-        logging.info(f"✓ Translation sent to user {user_id}")
+        logging.info(f"✓ Translation sent")
         
     except Exception as e:
-        logging.exception(f"✗ Translation failed: {type(e).__name__} | {str(e)[:200]}")
+        # 🔍 Детальное логирование ошибки
+        error_details = str(e)
+        logging.error(f"✗ API Error: {type(e).__name__} | {error_details}")
         
-        error_str = str(e).lower()
-        if "unauthorized" in error_str or "api_key" in error_str:
-            await message.answer("🔑 Ошибка API-ключа. Проверь TOGETHER_API_KEY на Render.")
-        elif "model" in error_str or "not found" in error_str:
-            await message.answer("❌ Модель не найдена. Попробуй позже.")
-        elif "429" in error_str or "rate limit" in error_str:
-            await message.answer("⏳ Слишком много запросов. Подожди 30 секунд.")
-        elif "402" in error_str or "quota" in error_str or "credit" in error_str:
-            await message.answer("💸 Закончились бесплатные кредиты. Проверь баланс на together.ai")
+        if "unauthorized" in error_details.lower():
+            await message.answer("🔑 Ошибка API-ключа.")
+        elif "model" in error_details.lower() or "not found" in error_details.lower():
+            await message.answer(f"❌ Модель не найдена. Попробуй позже. (Детали в логах)")
+        elif "429" in error_details or "rate limit" in error_details.lower():
+            await message.answer("⏳ Лимит запросов. Подожди 30 сек.")
+        elif "402" in error_details or "quota" in error_details.lower():
+            await message.answer("💸 Закончились кредиты. Проверь together.ai")
         else:
-            await message.answer(f"⚠️ Ошибка: {type(e).__name__}. Попробуй позже или напиши /start")
+            await message.answer(f"⚠️ Ошибка: {type(e).__name__}. Напиши /start")
 
 @dp.callback_query(F.data.in_(["swap", "change_lang", "change_style", "copy"]))
 async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
@@ -181,7 +181,7 @@ async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
         await cb.message.edit_text("Выбери новый стиль:", reply_markup=get_style_kb())
         await state.set_state(BotStates.choosing_style)
     elif cb.data == "copy":
-        await cb.answer("📋 Скопировано! (Нажми на сообщение и удерживай)")
+        await cb.answer("📋 Скопировано!")
 
 # --- WEBHOOK ---
 async def handle_webhook(request: web.Request):
@@ -196,7 +196,7 @@ async def handle_webhook(request: web.Request):
 async def on_startup():
     if WEBHOOK_HOST:
         await bot.set_webhook(WEBHOOK_URL)
-        logging.info(f"🔗 Webhook установлен: {WEBHOOK_URL}")
+        logging.info(f"🔗 Webhook: {WEBHOOK_URL}")
 
 async def main():
     await on_startup()
@@ -206,7 +206,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
     await site.start()
-    logging.info("🚀 Bot running on Render...")
+    logging.info("🚀 Bot running...")
     try:
         while True: await asyncio.sleep(3600)
     except asyncio.CancelledError:
