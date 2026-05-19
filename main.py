@@ -99,7 +99,7 @@ async def set_style(cb: types.CallbackQuery, state: FSMContext):
     cfg = user_data[cb.from_user.id]
     await cb.message.edit_text(
         f"✅ Настройки сохранены!\n"
-        f"📝 С {LANGS[cfg['src']]} на {LANGS[cfg['tgt']]}\n"
+        f" С {LANGS[cfg['src']]} на {LANGS[cfg['tgt']]}\n"
         f"🎯 Для: {GOALS[cfg['goal']]}, Стиль: {STYLES[cfg['style']]}\n\n"
         f"📩 Отправляй текст для перевода!"
     )
@@ -134,16 +134,14 @@ async def translate_text(message: types.Message):
             f"Верни ТОЛЬКО перевод, без кавычек и пояснений.\n\nТекст: {text}"
         )
 
-        # ✅ ПРОВЕРЕННАЯ БЕСПЛАТНАЯ МОДЕЛЬ (работает 100%)
-        MODEL_NAME = "google/gemma-2-9b-it:free"
-        logging.info(f"🤖 Calling model: {MODEL_NAME}")
+        # ✅ ПРОВЕРЕННАЯ БЕСПЛАТНАЯ МОДЕЛЬ (стабильно работает на OpenRouter)
+        MODEL_NAME = "meta-llama/llama-3-8b-instruct:free"
         
         response = await openrouter_client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=512,
-            timeout=30,
             extra_headers={
                 "HTTP-Referer": "https://github.com",
                 "X-Title": "LinguaFast Bot"
@@ -157,42 +155,28 @@ async def translate_text(message: types.Message):
         cfg['last_result'] = result
         
         await message.answer(
-            f"📥 Оригинал: {text}\n\n📤 Перевод: {result}",
+            f" Оригинал: {text}\n\n Перевод: {result}",
             reply_markup=get_action_kb()
         )
         logging.info(f"✓ Translation sent")
         
     except Exception as e:
-        # 🔍 ПОЛНОЕ логирование ошибки
-        logging.error(f"✗ FULL ERROR: {type(e).__name__}")
-        logging.error(f"✗ ERROR MESSAGE: {str(e)}")
+        # 🔍 ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБКИ
+        error_msg = str(e)
+        logging.error(f"❌ OpenRouter Error: {type(e).__name__}")
+        logging.error(f"❌ Details: {error_msg}")
         if hasattr(e, 'body'):
-            logging.error(f"✗ ERROR BODY: {e.body}")
+            logging.error(f"❌ API Response: {e.body}")
         
-        error_str = str(e).lower()
-        if "unauthorized" in error_str or "api_key" in error_str:
-            await message.answer("🔑 Ошибка ключа. Проверь OPENROUTER_API_KEY.")
-        elif "notfound" in error_str or "model" in error_str:
-            await message.answer("❌ Модель не найдена. Попробуем другую...")
-            # 🔁 Попытка с запасной моделью
-            try:
-                fallback_model = "mistralai/mistral-7b-instruct:free"
-                response = await openrouter_client.chat.completions.create(
-                    model=fallback_model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=512,
-                    timeout=30,
-                    extra_headers={"HTTP-Referer": "https://github.com", "X-Title": "LinguaFast Bot"}
-                )
-                result = response.choices[0].message.content.strip().strip('"').strip("'")
-                await message.answer(f"📥 Оригинал: {text}\n\n📤 Перевод: {result}", reply_markup=get_action_kb())
-            except:
-                await message.answer("⚠️ Временная ошибка. Напиши /start и попробуй снова.")
-        elif "429" in error_str or "rate limit" in error_str:
-            await message.answer("⏳ Лимит запросов. Подожди 20 секунд.")
+        # Понятный ответ пользователю
+        if "unauthorized" in error_msg.lower() or "api_key" in error_msg.lower():
+            await message.answer("🔑 Ошибка ключа. Проверь OPENROUTER_API_KEY на Render.")
+        elif "notfound" in error_msg.lower() or "model" in error_msg.lower():
+            await message.answer("❌ Модель временно недоступна. Попробуй через 1 минуту.")
+        elif "429" in error_msg or "rate limit" in error_msg.lower():
+            await message.answer(" Лимит запросов. Подожди 30 секунд.")
         else:
-            await message.answer(f"⚠️ Ошибка: {type(e).__name__}. Напиши /start")
+            await message.answer("⚠️ Ошибка сети. Напиши /start и попробуй снова.")
 
 @dp.callback_query(F.data.in_(["swap", "change_lang", "change_style", "copy"]))
 async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
