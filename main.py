@@ -151,7 +151,7 @@ async def translate_text(message: types.Message):
         else:
             await message.answer(f"⚠️ Ошибка: {type(e).__name__}. Напиши /start")
 
-@dp.callback_query(F.data.in_(["swap", "change_lang", "change_style", "copy"]))
+@dp.callback_query(F.data.in_([ "change_lang", "change_style", "copy"]))
 async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
     cfg = user_data.get(cb.from_user.id, {})
     if cb.data == "change_lang":
