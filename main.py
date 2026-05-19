@@ -56,7 +56,8 @@ def get_style_kb():
 
 def get_action_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-         InlineKeyboardButton(text="📋 Копировать", callback_data="copy")],
+        # Кнопка "Перевести обратно" удалена ✅
+        [InlineKeyboardButton(text="📋 Копировать", callback_data="copy")],
         [InlineKeyboardButton(text="🌐 Изменить язык", callback_data="change_lang"),
          InlineKeyboardButton(text="🎨 Изменить стиль", callback_data="change_style")]
     ])
