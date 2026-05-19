@@ -125,7 +125,7 @@ async def translate_text(message: types.Message):
             f"Контекст: {GOALS[cfg['goal']]}. Стиль: {STYLES[cfg['style']]}. "
             f"Верни ТОЛЬКО перевод, без кавычек и пояснений.\n\nТекст: {text}"
         )
-        MODEL_NAME = "google/gemma-2-9b-it:free"
+        MODEL_NAME = "baidu/cobuddy:free"
         response = await openrouter_client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
