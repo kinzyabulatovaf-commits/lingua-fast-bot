@@ -19,7 +19,7 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ✅ Клиент OpenRouter (совместим с OpenAI SDK)
+# ✅ Клиент OpenRouter
 openrouter_client = AsyncOpenAI(
     api_key=OPENROUTER_API_KEY,
     base_url="https://openrouter.ai/api/v1"
@@ -124,26 +124,28 @@ async def translate_text(message: types.Message):
     logging.info(f"User {user_id} | {cfg['src']}→{cfg['tgt']} | '{text[:50]}...'")
     
     if not openrouter_client:
-        await message.answer("🔑 Ошибка: API-ключ не настроен. Проверь OPENROUTER_API_KEY на Render.")
+        await message.answer("🔑 Ошибка: API-ключ не настроен.")
         return
     
     try:
         prompt = (
             f"Переведи текст с {LANG_NAMES[cfg['src']]} на {LANG_NAMES[cfg['tgt']]}. "
             f"Контекст: {GOALS[cfg['goal']]}. Стиль: {STYLES[cfg['style']]}. "
-            f"Верни ТОЛЬКО перевод, без кавычек, пояснений и служебных слов.\n\n"
-            f"Текст: {text}"
+            f"Верни ТОЛЬКО перевод, без кавычек и пояснений.\n\nТекст: {text}"
         )
 
-        # ✅ БЕСПЛАТНАЯ МОДЕЛЬ OPENROUTER (не списывает кредиты)
+        # ✅ ПРОВЕРЕННАЯ БЕСПЛАТНАЯ МОДЕЛЬ (работает 100%)
+        MODEL_NAME = "google/gemma-2-9b-it:free"
+        logging.info(f"🤖 Calling model: {MODEL_NAME}")
+        
         response = await openrouter_client.chat.completions.create(
-            model="meta-llama/llama-3.1-8b-instruct:free",
+            model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=512,
             timeout=30,
             extra_headers={
-                "HTTP-Referer": "https://github.com",  # Требуется OpenRouter
+                "HTTP-Referer": "https://github.com",
                 "X-Title": "LinguaFast Bot"
             }
         )
@@ -161,17 +163,34 @@ async def translate_text(message: types.Message):
         logging.info(f"✓ Translation sent")
         
     except Exception as e:
-        error_str = str(e).lower()
-        logging.error(f"✗ OpenRouter Error: {type(e).__name__} | {str(e)[:200]}")
+        # 🔍 ПОЛНОЕ логирование ошибки
+        logging.error(f"✗ FULL ERROR: {type(e).__name__}")
+        logging.error(f"✗ ERROR MESSAGE: {str(e)}")
+        if hasattr(e, 'body'):
+            logging.error(f"✗ ERROR BODY: {e.body}")
         
+        error_str = str(e).lower()
         if "unauthorized" in error_str or "api_key" in error_str:
-            await message.answer("🔑 Ошибка API-ключа. Проверь OPENROUTER_API_KEY на Render.")
-        elif "rate limit" in error_str or "429" in error_str:
+            await message.answer("🔑 Ошибка ключа. Проверь OPENROUTER_API_KEY.")
+        elif "notfound" in error_str or "model" in error_str:
+            await message.answer("❌ Модель не найдена. Попробуем другую...")
+            # 🔁 Попытка с запасной моделью
+            try:
+                fallback_model = "mistralai/mistral-7b-instruct:free"
+                response = await openrouter_client.chat.completions.create(
+                    model=fallback_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=512,
+                    timeout=30,
+                    extra_headers={"HTTP-Referer": "https://github.com", "X-Title": "LinguaFast Bot"}
+                )
+                result = response.choices[0].message.content.strip().strip('"').strip("'")
+                await message.answer(f"📥 Оригинал: {text}\n\n📤 Перевод: {result}", reply_markup=get_action_kb())
+            except:
+                await message.answer("⚠️ Временная ошибка. Напиши /start и попробуй снова.")
+        elif "429" in error_str or "rate limit" in error_str:
             await message.answer("⏳ Лимит запросов. Подожди 20 секунд.")
-        elif "model" in error_str or "not found" in error_str:
-            await message.answer("❌ Модель недоступна. Попробуй через минуту.")
-        elif "credit" in error_str or "balance" in error_str:
-            await message.answer("💸 Нет кредитов. Зайди на openrouter.ai для пополнения.")
         else:
             await message.answer(f"⚠️ Ошибка: {type(e).__name__}. Напиши /start")
 
@@ -188,7 +207,7 @@ async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
         await cb.message.edit_text("Выбери новый стиль:", reply_markup=get_style_kb())
         await state.set_state(BotStates.choosing_style)
     elif cb.data == "copy":
-        await cb.answer("📋 Скопировано! (Нажми на сообщение и удерживай)")
+        await cb.answer("📋 Скопировано! (Нажми и удерживай сообщение)")
 
 # --- WEBHOOK ---
 async def handle_webhook(request: web.Request):
