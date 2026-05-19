@@ -6,24 +6,24 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from together import AsyncTogether
+from openai import AsyncOpenAI
 from aiohttp import web
-from openai import AsyncOpenAI 
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "")
 WEBHOOK_PATH = "/webhook/"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-openrouter_client = AsyncOpenAI(
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1"  # ✅ Важно: адрес OpenRouter
-)
 
+# ✅ Клиент OpenRouter (совместим с OpenAI SDK)
+openrouter_client = AsyncOpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
+) if OPENROUTER_API_KEY else None
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
@@ -35,6 +35,7 @@ STYLES = {"formal": "формальный", "informal": "разговорный"
 
 user_data = {}
 
+# --- МАШИНА СОСТОЯНИЙ ---
 class BotStates(StatesGroup):
     choosing_src_lang = State()
     choosing_tgt_lang = State()
@@ -122,27 +123,30 @@ async def translate_text(message: types.Message):
         
     logging.info(f"User {user_id} | {cfg['src']}→{cfg['tgt']} | '{text[:50]}...'")
     
-    if not together_client:
-        await message.answer("🔑 Ошибка: API-ключ не настроен.")
+    if not openrouter_client:
+        await message.answer("🔑 Ошибка: API-ключ не настроен. Проверь OPENROUTER_API_KEY на Render.")
         return
     
     try:
         prompt = (
             f"Переведи текст с {LANG_NAMES[cfg['src']]} на {LANG_NAMES[cfg['tgt']]}. "
             f"Контекст: {GOALS[cfg['goal']]}. Стиль: {STYLES[cfg['style']]}. "
-            f"Верни ТОЛЬКО перевод, без кавычек и пояснений.\n\nТекст: {text}"
+            f"Верни ТОЛЬКО перевод, без кавычек, пояснений и служебных слов.\n\n"
+            f"Текст: {text}"
         )
 
-        # ✅ ПРОВЕРЕННАЯ МОДЕЛЬ (бесплатная и доступная)
-        MODEL_NAME = "meta-llama/Llama-3-8b-chat-hf"  # Бесплатная, без списания кредита
-        logging.info(f"🤖 Calling model: {MODEL_NAME}")
-        
+        # ✅ БЕСПЛАТНАЯ МОДЕЛЬ OPENROUTER (не списывает кредиты)
         response = await openrouter_client.chat.completions.create(
-    model="meta-llama/llama-3.1-8b-instruct:free",  # ✅ Бесплатная модель
-    messages=[{"role": "user", "content": prompt}],
-    temperature=0.3,
-    max_tokens=512
-)
+            model="meta-llama/llama-3.1-8b-instruct:free",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=512,
+            timeout=30,
+            extra_headers={
+                "HTTP-Referer": "https://github.com",  # Требуется OpenRouter
+                "X-Title": "LinguaFast Bot"
+            }
+        )
         
         result = response.choices[0].message.content.strip()
         result = result.strip('"').strip("'")
@@ -157,18 +161,17 @@ async def translate_text(message: types.Message):
         logging.info(f"✓ Translation sent")
         
     except Exception as e:
-        # 🔍 Детальное логирование ошибки
-        error_details = str(e)
-        logging.error(f"✗ API Error: {type(e).__name__} | {error_details}")
+        error_str = str(e).lower()
+        logging.error(f"✗ OpenRouter Error: {type(e).__name__} | {str(e)[:200]}")
         
-        if "unauthorized" in error_details.lower():
-            await message.answer("🔑 Ошибка API-ключа.")
-        elif "model" in error_details.lower() or "not found" in error_details.lower():
-            await message.answer(f"❌ Модель не найдена. Попробуй позже. (Детали в логах)")
-        elif "429" in error_details or "rate limit" in error_details.lower():
-            await message.answer("⏳ Лимит запросов. Подожди 30 сек.")
-        elif "402" in error_details or "quota" in error_details.lower():
-            await message.answer("💸 Закончились кредиты. Проверь together.ai")
+        if "unauthorized" in error_str or "api_key" in error_str:
+            await message.answer("🔑 Ошибка API-ключа. Проверь OPENROUTER_API_KEY на Render.")
+        elif "rate limit" in error_str or "429" in error_str:
+            await message.answer("⏳ Лимит запросов. Подожди 20 секунд.")
+        elif "model" in error_str or "not found" in error_str:
+            await message.answer("❌ Модель недоступна. Попробуй через минуту.")
+        elif "credit" in error_str or "balance" in error_str:
+            await message.answer("💸 Нет кредитов. Зайди на openrouter.ai для пополнения.")
         else:
             await message.answer(f"⚠️ Ошибка: {type(e).__name__}. Напиши /start")
 
@@ -185,7 +188,7 @@ async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
         await cb.message.edit_text("Выбери новый стиль:", reply_markup=get_style_kb())
         await state.set_state(BotStates.choosing_style)
     elif cb.data == "copy":
-        await cb.answer("📋 Скопировано!")
+        await cb.answer("📋 Скопировано! (Нажми на сообщение и удерживай)")
 
 # --- WEBHOOK ---
 async def handle_webhook(request: web.Request):
@@ -210,7 +213,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
     await site.start()
-    logging.info("🚀 Bot running...")
+    logging.info("🚀 Bot running on Render...")
     try:
         while True: await asyncio.sleep(3600)
     except asyncio.CancelledError:
