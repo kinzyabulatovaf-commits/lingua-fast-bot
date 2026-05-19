@@ -129,7 +129,7 @@ async def translate_text(message: types.Message):
         )
 
         # ✅ ПРОВЕРЕННАЯ МОДЕЛЬ (бесплатная и доступная)
-        MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct-Turbo"
+        MODEL_NAME = "meta-llama/Llama-3-8b-chat-hf"  # Бесплатная, без списания кредита
         logging.info(f"🤖 Calling model: {MODEL_NAME}")
         
         response = await together_client.chat.completions.create(
