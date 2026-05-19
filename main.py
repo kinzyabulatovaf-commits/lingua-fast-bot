@@ -56,7 +56,6 @@ def get_style_kb():
 
 def get_action_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Перевести обратно", callback_data="swap"),
          InlineKeyboardButton(text="📋 Копировать", callback_data="copy")],
         [InlineKeyboardButton(text="🌐 Изменить язык", callback_data="change_lang"),
          InlineKeyboardButton(text="🎨 Изменить стиль", callback_data="change_style")]
@@ -155,10 +154,7 @@ async def translate_text(message: types.Message):
 @dp.callback_query(F.data.in_(["swap", "change_lang", "change_style", "copy"]))
 async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
     cfg = user_data.get(cb.from_user.id, {})
-    if cb.data == "swap":
-        cfg['src'], cfg['tgt'] = cfg.get('tgt'), cfg.get('src')
-        await cb.answer("🔄 Языки поменяны местами!")
-    elif cb.data == "change_lang":
+    if cb.data == "change_lang":
         await cb.message.edit_text("Выбери новый язык оригинала:", reply_markup=get_lang_kb())
         await state.set_state(BotStates.choosing_src_lang)
     elif cb.data == "change_style":
