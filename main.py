@@ -34,6 +34,7 @@ STYLES = {"formal": "формальный", "informal": "разговорный"
 
 user_data = {}
 
+# --- МАШИНА СОСТОЯНИЙ ---
 class BotStates(StatesGroup):
     choosing_src_lang = State()
     choosing_tgt_lang = State()
@@ -51,12 +52,12 @@ def get_goal_kb():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_style_kb():
+    # ✅ Кнопки стиля с явным префиксом
     buttons = [[InlineKeyboardButton(text=v, callback_data=f"style_{k}")] for k, v in STYLES.items()]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_action_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        # Кнопка "Перевести обратно" удалена ✅
         [InlineKeyboardButton(text="📋 Копировать", callback_data="copy")],
         [InlineKeyboardButton(text="🌐 Изменить язык", callback_data="change_lang"),
          InlineKeyboardButton(text="🎨 Изменить стиль", callback_data="change_style")]
@@ -71,37 +72,53 @@ async def start_cmd(message: types.Message, state: FSMContext):
 
 @dp.callback_query(BotStates.choosing_src_lang)
 async def set_src_lang(cb: types.CallbackQuery, state: FSMContext):
-    code = cb.data.split("_")[1]
-    user_data[cb.from_user.id]["src"] = code
-    await cb.message.edit_text(f"✅ Источник: {LANGS[code]}. Теперь выбери язык ПЕРЕВОДА:", reply_markup=get_lang_kb(exclude=code))
-    await state.set_state(BotStates.choosing_tgt_lang)
+    try:
+        code = cb.data.split("_")[1]
+        user_data[cb.from_user.id]["src"] = code
+        await cb.message.edit_text(f"✅ Источник: {LANGS[code]}. Теперь выбери язык ПЕРЕВОДА:", reply_markup=get_lang_kb(exclude=code))
+        await state.set_state(BotStates.choosing_tgt_lang)
+    except (IndexError, KeyError) as e:
+        logging.error(f"Error in set_src_lang: {e} | data: {cb.data}")
+        await cb.answer("⚠️ Ошибка. Начни с /start", show_alert=True)
 
 @dp.callback_query(BotStates.choosing_tgt_lang)
 async def set_tgt_lang(cb: types.CallbackQuery, state: FSMContext):
-    code = cb.data.split("_")[1]
-    user_data[cb.from_user.id]["tgt"] = code
-    await cb.message.edit_text(f"✅ Цель: {LANGS[code]}. Для какой сферы нужен перевод?", reply_markup=get_goal_kb())
-    await state.set_state(BotStates.choosing_goal)
+    try:
+        code = cb.data.split("_")[1]
+        user_data[cb.from_user.id]["tgt"] = code
+        await cb.message.edit_text(f"✅ Цель: {LANGS[code]}. Для какой сферы нужен перевод?", reply_markup=get_goal_kb())
+        await state.set_state(BotStates.choosing_goal)
+    except (IndexError, KeyError) as e:
+        logging.error(f"Error in set_tgt_lang: {e} | data: {cb.data}")
+        await cb.answer("⚠️ Ошибка. Начни с /start", show_alert=True)
 
 @dp.callback_query(BotStates.choosing_goal)
 async def set_goal(cb: types.CallbackQuery, state: FSMContext):
-    goal = cb.data.split("_")[1]
-    user_data[cb.from_user.id]["goal"] = goal
-    await cb.message.edit_text(f"🎯 Сфера: {GOALS[goal]}. Выбери стиль общения:", reply_markup=get_style_kb())
-    await state.set_state(BotStates.choosing_style)
+    try:
+        goal = cb.data.split("_")[1]
+        user_data[cb.from_user.id]["goal"] = goal
+        await cb.message.edit_text(f"🎯 Сфера: {GOALS[goal]}. Выбери стиль общения:", reply_markup=get_style_kb())
+        await state.set_state(BotStates.choosing_style)
+    except (IndexError, KeyError) as e:
+        logging.error(f"Error in set_goal: {e} | data: {cb.data}")
+        await cb.answer("⚠️ Ошибка. Начни с /start", show_alert=True)
 
 @dp.callback_query(BotStates.choosing_style)
 async def set_style(cb: types.CallbackQuery, state: FSMContext):
-    style = cb.data.split("_")[1]
-    user_data[cb.from_user.id]["style"] = style
-    cfg = user_data[cb.from_user.id]
-    await cb.message.edit_text(
-        f"✅ Настройки сохранены!\n"
-        f"📝 С {LANGS[cfg['src']]} на {LANGS[cfg['tgt']]}\n"
-        f"🎯 Для: {GOALS[cfg['goal']]}, Стиль: {STYLES[cfg['style']]}\n\n"
-        f"📩 Отправляй текст для перевода!"
-    )
-    await state.set_state(BotStates.waiting_for_text)
+    try:
+        style = cb.data.split("_")[1]
+        user_data[cb.from_user.id]["style"] = style
+        cfg = user_data[cb.from_user.id]
+        await cb.message.edit_text(
+            f"✅ Настройки сохранены!\n"
+            f"📝 С {LANGS[cfg['src']]} на {LANGS[cfg['tgt']]}\n"
+            f"🎯 Для: {GOALS[cfg['goal']]}, Стиль: {STYLES[cfg['style']]}\n\n"
+            f"📩 Отправляй текст для перевода!"
+        )
+        await state.set_state(BotStates.waiting_for_text)
+    except (IndexError, KeyError) as e:
+        logging.error(f"Error in set_style: {e} | data: {cb.data}")
+        await cb.answer("⚠️ Ошибка. Начни с /start", show_alert=True)
 
 @dp.message(BotStates.waiting_for_text)
 async def translate_text(message: types.Message):
@@ -131,10 +148,7 @@ async def translate_text(message: types.Message):
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=512,
-            extra_headers={
-                "HTTP-Referer": "https://github.com",
-                "X-Title": "LinguaFast Bot"
-            }
+            extra_headers={"HTTP-Referer": "https://github.com", "X-Title": "LinguaFast Bot"}
         )
         result = response.choices[0].message.content.strip().strip('"').strip("'")
         cfg['last_text'] = text
@@ -152,17 +166,37 @@ async def translate_text(message: types.Message):
         else:
             await message.answer(f"⚠️ Ошибка: {type(e).__name__}. Напиши /start")
 
-@dp.callback_query(F.data.in_([ "change_lang", "change_style", "copy"]))
+# ✅ УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК КНОПОК ДЕЙСТВИЙ
+@dp.callback_query(F.data.in_(["change_lang", "change_style", "copy"]))
 async def handle_actions(cb: types.CallbackQuery, state: FSMContext):
-    cfg = user_data.get(cb.from_user.id, {})
+    user_id = cb.from_user.id
+    if user_id not in user_data:
+        await cb.answer("⚠️ Начни с /start", show_alert=True)
+        return
+        
+    cfg = user_data[user_id]
+    
     if cb.data == "change_lang":
+        # ✅ Сохраняем текущие настройки и переходим к выбору языка
         await cb.message.edit_text("Выбери новый язык оригинала:", reply_markup=get_lang_kb())
         await state.set_state(BotStates.choosing_src_lang)
+        await cb.answer()
+        
     elif cb.data == "change_style":
+        # ✅ Переходим к выбору стиля
         await cb.message.edit_text("Выбери новый стиль:", reply_markup=get_style_kb())
         await state.set_state(BotStates.choosing_style)
+        await cb.answer()
+        
     elif cb.data == "copy":
         await cb.answer("📋 Скопировано! (Нажми и удерживай сообщение)")
+
+# ✅ FALLBACK: ловим все необработанные callback, чтобы бот не падал
+@dp.callback_query()
+async def unhandled_callback(cb: types.CallbackQuery):
+    logging.warning(f"⚠️ Unhandled callback: {cb.data} from user {cb.from_user.id}")
+    # Не возвращаем ошибку, просто игнорируем неизвестные кнопки
+    await cb.answer()
 
 # --- WEBHOOK ---
 async def handle_webhook(request: web.Request):
@@ -171,12 +205,12 @@ async def handle_webhook(request: web.Request):
         await dp.feed_update(bot, update)
         return web.Response()
     except Exception as e:
-        logging.error(f"Webhook error: {e}")
+        logging.error(f"Webhook error: {type(e).__name__} | {str(e)[:200]}")
         return web.Response(status=500)
 
 async def on_startup():
     if WEBHOOK_HOST:
-        await bot.set_webhook(WEBHOOK_URL)
+        await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
         logging.info(f"🔗 Webhook: {WEBHOOK_URL}")
 
 async def main():
