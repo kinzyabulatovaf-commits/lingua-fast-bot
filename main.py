@@ -8,6 +8,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from together import AsyncTogether
 from aiohttp import web
+from openai import AsyncOpenAI 
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -18,7 +19,11 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-together_client = AsyncTogether(api_key=TOGETHER_API_KEY) if TOGETHER_API_KEY else None
+openrouter_client = AsyncOpenAI(
+    api_key=os.getenv("OPENROUTER_API_KEY"),
+    base_url="https://openrouter.ai/api/v1"  # ✅ Важно: адрес OpenRouter
+)
+
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
@@ -132,13 +137,12 @@ async def translate_text(message: types.Message):
         MODEL_NAME = "meta-llama/Llama-3-8b-chat-hf"  # Бесплатная, без списания кредита
         logging.info(f"🤖 Calling model: {MODEL_NAME}")
         
-        response = await together_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=512,
-            timeout=30
-        )
+        response = await openrouter_client.chat.completions.create(
+    model="meta-llama/llama-3.1-8b-instruct:free",  # ✅ Бесплатная модель
+    messages=[{"role": "user", "content": prompt}],
+    temperature=0.3,
+    max_tokens=512
+)
         
         result = response.choices[0].message.content.strip()
         result = result.strip('"').strip("'")
