@@ -1,11 +1,18 @@
+# main.py — News Aggregator + Telegram Bot (FastAPI + aiogram 3.x)
+# ✅ Совместим с Python 3.14, aiogram 3.28+, Render
+
 import os, sqlite3, time, logging, json, asyncio, httpx
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
+
+# FastAPI
 from fastapi import FastAPI, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from aiohttp import web
+
+# aiogram 3.x — ✅ БЕЗ TelegramNotFoundError
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -13,17 +20,14 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery, LinkPreviewOptions
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiogram.exceptions import TelegramNotFoundError
+
+# RSS + Translation + External APIs
 import feedparser
 from deep_translator import GoogleTranslator
 from dateutil import parser as date_parser
 from dotenv import load_dotenv
 
-$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm"
-$content = Get-Content main.py -Raw
-$content = $content -replace '# 🔧 Конфигурация', "# 🔧 Конфигурация (deploy: $timestamp)"
-$content | Set-Content main.py -Encoding utf8
-
+# 🔧 Конфигурация
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -34,26 +38,31 @@ NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
 if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN не найден!")
+    raise ValueError("❌ BOT_TOKEN не найден в .env или настройках Render!")
 
+# Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
+# Пути
 BASE_DIR = Path(__file__).parent.resolve()
 STATIC_DIR = BASE_DIR / "static"
 DB_PATH = BASE_DIR / "news.db"
 
+# RSS-источники
 RSS_FEEDS = [
     "https://feeds.bbci.co.uk/news/technology/rss.xml",
     "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml",
     "https://feeds.reuters.com/reuters/technologyNews"
 ]
 
+# ==================== FSM States ====================
 class BotStates(StatesGroup):
     choosing_src_lang = State()
 
+# ==================== База данных ====================
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, lang TEXT DEFAULT 'en')")
@@ -62,6 +71,7 @@ def init_db():
             orig_title TEXT, orig_summary TEXT, translations TEXT)""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_date ON news(pub_date DESC)")
         conn.commit()
+    logging.info("✅ База данных готова")
 
 def get_user_lang(chat_id: int) -> str:
     with sqlite3.connect(DB_PATH) as conn:
@@ -73,9 +83,12 @@ def set_user_lang(chat_id: int, lang: str):
         conn.execute("INSERT OR REPLACE INTO users (chat_id, lang) VALUES (?, ?)", (chat_id, lang))
         conn.commit()
 
+# ==================== NewsAPI ====================
 def fetch_newsapi():
-    if not NEWSAPI_KEY: return 0
-    logging.info("📰 Загрузка из NewsAPI...")
+    if not NEWSAPI_KEY:
+        logging.warning("⚠️ NEWSAPI_KEY не задан. Загрузка пропущена.")
+        return 0
+    logging.info("📰 Загрузка из NewsAPI (последние 7 дней)...")
     url = "https://newsapi.org/v2/everything"
     count = 0
     today = datetime.now()
@@ -96,18 +109,20 @@ def fetch_newsapi():
                     if cursor.fetchone(): continue
                     pub_dt = datetime.fromisoformat(art["publishedAt"].replace("Z", "+00:00"))
                     pub_date = pub_dt.strftime("%Y-%m-%d")
-                    cursor.execute("INSERT OR IGNORE INTO news (link, source, pub_date, orig_title, orig_summary, translations) VALUES (?, ?, ?, ?, ?, '{}')",
+                    cursor.execute("""INSERT OR IGNORE INTO news (link, source, pub_date, orig_title, orig_summary, translations) VALUES (?, ?, ?, ?, ?, '{}')""",
                         (link, art["source"]["name"], pub_date, art.get("title",""), art.get("description","") or ""))
                     count += 1
                 conn.commit()
-            time.sleep(1.1)
+            time.sleep(1.1)  # Лимит бесплатного тарифа
         except Exception as e:
-            logging.error(f"❌ NewsAPI error: {e}")
-    logging.info(f"✅ Добавлено {count} статей.")
+            logging.error(f"❌ NewsAPI error ({date_str}): {e}")
+    logging.info(f"✅ NewsAPI: добавлено {count} статей.")
     return count
 
+# ==================== Перевод + кэш ====================
 def translate_and_cache(lang: str, date: str):
     if lang == "en": return
+    logging.info(f"🌐 Перевод на {lang} за {date}...")
     tr = GoogleTranslator(source='auto', target=lang)
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -121,17 +136,37 @@ def translate_and_cache(lang: str, date: str):
                 cache[lang] = f"{t_title}|||{t_sum}"
                 conn.execute("UPDATE news SET translations=? WHERE id=?", (json.dumps(cache), r["id"]))
                 time.sleep(0.3)
-            except: pass
+            except Exception as e:
+                logging.warning(f"⚠️ Пропуск перевода: {e}")
+                cache[lang] = f"{r['orig_title']}|||{r['orig_summary']}"
+                conn.execute("UPDATE news SET translations=? WHERE id=?", (json.dumps(cache), r["id"]))
         conn.commit()
 
+# ==================== OpenRouter AI ====================
 async def ask_openrouter(prompt: str) -> str:
-    if not OPENROUTER_API_KEY: return "⚠️ AI не настроен."
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com/kinzyabulatovaf-commits/lingua_fast_bot", "X-Title": "TG Bot"}
-    payload = {"model": "nvidia/nemotron-3.5-content-safety:free", "messages": [{"role": "user", "content": prompt}], "stream": True, "max_tokens": 500}
+    if not OPENROUTER_API_KEY:
+        return "⚠️ AI-сервис не настроен. Обратись к администратору."
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/kinzyabulatovaf-commits/lingua_fast_bot",
+        "X-Title": "TG News Bot",
+    }
+    payload = {
+        "model": "nvidia/nemotron-3.5-content-safety:free",
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": True,
+        "max_tokens": 500,
+    }
     try:
         async with httpx.AsyncClient(timeout=45.0) as client:
             async with client.stream("POST", "https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload) as response:
-                if response.status_code != 200: return "⚠️ Ошибка подключения к нейросети."
+                if response.status_code == 404:
+                    return "⚠️ AI-модель временно недоступна."
+                elif response.status_code == 401:
+                    return "⚠️ Ошибка авторизации в нейросети."
+                elif response.status_code != 200:
+                    return "⚠️ Ошибка подключения к нейросети."
                 full_response = ""
                 async for line in response.aiter_lines():
                     if line.startswith("data: "):
@@ -142,15 +177,17 @@ async def ask_openrouter(prompt: str) -> str:
                             content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
                             if content: full_response += content
                         except: continue
-                return full_response.strip() or "🤔 Нет ответа."
+                return full_response.strip() if full_response.strip() else "🤔 Нейросеть не сгенерировала ответ."
     except Exception as e:
-        logging.error(f"❌ OpenRouter: {e}")
-        return "⚠️ Ошибка обработки запроса."
+        logging.error(f"❌ OpenRouter error: {e}")
+        return "⚠️ Произошла ошибка при обработке запроса."
 
+# ==================== Lifespan (startup/shutdown) ====================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    if NEWSAPI_KEY: await asyncio.to_thread(fetch_newsapi)
+    if NEWSAPI_KEY:
+        await asyncio.to_thread(fetch_newsapi)
     async def periodic():
         while True:
             await asyncio.sleep(1800)
@@ -159,6 +196,7 @@ async def lifespan(app: FastAPI):
     yield
     task.cancel()
 
+# ==================== FastAPI App ====================
 app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
@@ -179,12 +217,14 @@ def get_news(lang: str = "ru", date: str = Query("latest"), offset: int = 0, lim
         result = []
         for r in rows:
             cache = json.loads(r["translations"] or "{}")
-            t, s = (cache[lang].split("|||", 1) if lang in cache else (r["orig_title"], r["orig_summary"]))
+            if lang in cache: t, s = cache[lang].split("|||", 1)
+            else: t, s = (r["orig_title"], r["orig_summary"])
             result.append({"title": t, "summary": s, "link": r["link"], "source": r["source"], "date": r["pub_date"]})
         return result
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# ==================== Telegram Bot Handlers ====================
 @router.message(CommandStart())
 async def cmd_start(msg: Message, state: FSMContext):
     try:
@@ -195,8 +235,11 @@ async def cmd_start(msg: Message, state: FSMContext):
         kb.adjust(2)
         await msg.answer(f"👋 Привет! Выбери язык:\nТекущий: {lang.upper()}", reply_markup=kb.as_markup())
         await state.set_state(BotStates.choosing_src_lang)
-    except TelegramNotFoundError: pass
-    except Exception as e: logging.error(f"❌ /start: {e}")
+    except Exception as e:
+        if "message" in str(e).lower() and ("not found" in str(e).lower() or "edit" in str(e).lower()):
+            logging.warning(f"⚠️ Сообщение устарело при /start")
+        else:
+            logging.error(f"❌ /start error: {e}")
 
 @router.callback_query(BotStates.choosing_src_lang)
 async def process_lang(cb: CallbackQuery, state: FSMContext):
@@ -204,11 +247,20 @@ async def process_lang(cb: CallbackQuery, state: FSMContext):
         lang = cb.data.split(":")[1] if ":" in cb.data else cb.data
         set_user_lang(cb.from_user.id, lang)
         await state.clear()
-        if cb.message: await cb.message.edit_text(f"✅ Язык: {lang.upper()}\nОтправь /news")
-        else: await cb.answer(f"✅ {lang.upper()}")
-    except TelegramNotFoundError: await cb.answer("⚠️ Напишите /start заново.")
-    except Exception as e: logging.error(f"❌ Lang: {e}"); await cb.answer("⚠️ Ошибка", show_alert=True)
-    finally: await cb.answer()
+        if cb.message:
+            await cb.message.edit_text(f"✅ Язык: {lang.upper()}\nОтправь /news")
+        else:
+            await cb.answer(f"✅ {lang.upper()}")
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "message not found" in err_msg or "can't be edited" in err_msg or "there is no message to edit" in err_msg:
+            logging.warning(f"⚠️ Сообщение устарело при выборе языка")
+            await cb.answer("⚠️ Напишите /start заново")
+        else:
+            logging.error(f"❌ Lang error: {e}")
+            await cb.answer("⚠️ Ошибка", show_alert=True)
+    finally:
+        await cb.answer()
 
 @router.message(Command("news"))
 async def cmd_news(msg: Message):
@@ -219,33 +271,48 @@ async def cmd_news(msg: Message):
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT * FROM news WHERE pub_date=? AND lang=? ORDER BY id DESC LIMIT 10", (today, lang)).fetchall()
-        if not rows: await msg.answer("📭 Новостей нет. Попробуй /refresh"); return
+        if not rows:
+            await msg.answer("📭 Новостей на сегодня пока нет. Попробуй /refresh")
+            return
         text = f"📰 Новости на {today} ({lang.upper()})\n\n"
         for i, r in enumerate(rows, 1):
             cache = json.loads(r["translations"] or "{}")
             t, s = (cache[lang].split("|||",1) if lang in cache else (r["orig_title"], r["orig_summary"]))
             text += f"{i}. <b>{t}</b>\n{s}\n🔗 <a href='{r['link']}'>Источник</a>\n\n"
         await msg.answer(text, parse_mode="HTML", link_preview_options=LinkPreviewOptions(is_disabled=True))
-    except TelegramNotFoundError: pass
-    except Exception as e: logging.error(f"❌ /news: {e}"); await msg.answer("⚠️ Ошибка")
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "message" in err_msg and ("not found" in err_msg or "edit" in err_msg):
+            logging.warning(f"⚠️ Сообщение устарело при /news")
+        else:
+            logging.error(f"❌ /news error: {e}")
+            await msg.answer("⚠️ Ошибка загрузки новостей")
 
 @router.message()
 async def handle_text(msg: Message):
     if not msg.text or msg.text.startswith("/"): return
     try:
         await bot.send_chat_action(msg.chat.id, "typing")
-        prompt = f"Ты — помощник в боте с новостями. Отвечай кратко. Вопрос: {msg.text}"
+        prompt = f"Ты — помощник в боте с новостями. Отвечай кратко, на языке пользователя. Вопрос: {msg.text}"
         ai_response = await ask_openrouter(prompt)
         for chunk in [ai_response[i:i+4000] for i in range(0, len(ai_response), 4000)]:
             await msg.answer(chunk)
-    except TelegramNotFoundError: pass
-    except Exception as e: logging.error(f"❌ AI: {e}"); await msg.answer("⚠️ Ошибка")
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "message" in err_msg and ("not found" in err_msg or "edit" in err_msg):
+            logging.warning(f"⚠️ Сообщение устарело при обработке текста")
+        else:
+            logging.error(f"❌ AI error: {e}")
+            await msg.answer("⚠️ Ошибка при обработке запроса")
 
+# ==================== Webhook / Polling Setup ====================
 async def on_startup():
     if WEBHOOK_URL:
         await bot.set_webhook(f"{WEBHOOK_URL}/webhook", allowed_updates=dp.resolve_used_update_types())
         logging.info(f"🌐 Webhook: {WEBHOOK_URL}/webhook")
-    else: await bot.delete_webhook(); logging.info("📡 Polling")
+    else:
+        await bot.delete_webhook()
+        logging.info("📡 Polling mode")
 
 async def on_shutdown():
     if WEBHOOK_URL: await bot.delete_webhook()
@@ -263,7 +330,8 @@ async def main():
         await site.start()
         logging.info(f"✅ Server on port {PORT}")
         await asyncio.Event().wait()
-    else: await dp.start_polling(bot)
+    else:
+        await dp.start_polling(bot)
 
 if __name__ == "__main__":
     import uvicorn
