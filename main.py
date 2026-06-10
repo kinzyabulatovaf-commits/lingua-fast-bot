@@ -6,6 +6,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramNotFoundError
 from openai import AsyncOpenAI
 from aiohttp import web
 
@@ -70,16 +71,33 @@ async def start_cmd(message: types.Message, state: FSMContext):
     await message.answer("👋 Привет! Выбери язык ОРИГИНАЛА:", reply_markup=get_lang_kb())
     await state.set_state(BotStates.choosing_src_lang)
 
+from aiogram.exceptions import TelegramNotFoundError
+from aiogram.fsm.context import FSMContext
+# ... остальные импорты ...
+
 @dp.callback_query(BotStates.choosing_src_lang)
-async def set_src_lang(cb: types.CallbackQuery, state: FSMContext):
+async def process_lang_selection(cb: CallbackQuery, state: FSMContext):
     try:
-        code = cb.data.split("_")[1]
-        user_data[cb.from_user.id]["src"] = code
-        await cb.message.edit_text(f"✅ Источник: {LANGS[code]}. Теперь выбери язык ПЕРЕВОДА:", reply_markup=get_lang_kb(exclude=code))
-        await state.set_state(BotStates.choosing_tgt_lang)
-    except (IndexError, KeyError) as e:
-        logging.error(f"Error in set_src_lang: {e} | data: {cb.data}")
-        await cb.answer("⚠️ Ошибка. Начни с /start", show_alert=True)
+        # 🔹 Твоя логика выбора языка (подставь свои переменные/методы)
+        chosen_lang = cb.data  # или как ты достаёшь язык
+        set_user_lang(cb.from_user.id, chosen_lang)
+        await state.update_data(lang=chosen_lang)
+        # await state.set_state(СледующийСтейт)  # если нужен переход
+
+        # 🔹 Безопасная отправка
+        if cb.message:
+            await cb.message.edit_text(f"✅ Язык установлен: {chosen_lang.upper()}\nОтправь /news")
+        else:
+            await cb.answer("✅ Язык сохранён. Отправьте /news")
+            
+    except TelegramNotFoundError:
+        # Сообщение удалено/изменено или сессия протухла после рестарта
+        await cb.answer("⚠️ Сессия обновлена. Напишите /start заново.")
+    except Exception as e:
+        logging.error(f"FSM lang error: {e}")
+        await cb.answer("⚠️ Ошибка выбора языка", show_alert=True)
+    finally:
+        await cb.answer()  # 🔥 Обязательно! Снимает "часики" загрузки в Telegram
 
 @dp.callback_query(BotStates.choosing_tgt_lang)
 async def set_tgt_lang(cb: types.CallbackQuery, state: FSMContext):
