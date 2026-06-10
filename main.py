@@ -19,6 +19,11 @@ from deep_translator import GoogleTranslator
 from dateutil import parser as date_parser
 from dotenv import load_dotenv
 
+$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm"
+$content = Get-Content main.py -Raw
+$content = $content -replace '# 🔧 Конфигурация', "# 🔧 Конфигурация (deploy: $timestamp)"
+$content | Set-Content main.py -Encoding utf8
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
